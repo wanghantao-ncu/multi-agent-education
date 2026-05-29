@@ -20,6 +20,8 @@ _path_stats: Dict[str, Dict[str, float]] = {}
 _llm_calls: int = 0
 _llm_failures: int = 0
 _llm_latency_ms: Deque[float] = deque(maxlen=200)
+_graph_node_stats: Dict[str, Dict[str, float]] = {}
+_trace_index: Dict[str, List[Dict[str, Any]]] = {}
 
 
 def record_http_request(path: str, status_code: int, latency_ms: float) -> None:
@@ -47,6 +49,52 @@ def record_llm_call(latency_ms: float, failed: bool) -> None:
         if failed:
             _llm_failures += 1
         _llm_latency_ms.append(latency_ms)
+
+
+def record_graph_node_execution(
+    trace_id: str,
+    node_name: str,
+    elapsed_ms: float,
+    status: str,
+    learner_id: str,
+    knowledge_id: str,
+) -> None:
+    """记录一次 graph 节点执行（含 trace 维度索引）。"""
+    if not trace_id:
+        return
+    with _lock:
+        bucket = _graph_node_stats.setdefault(
+            node_name,
+            {"count": 0, "errors": 0, "sum_ms": 0.0, "max_ms": 0.0},
+        )
+        bucket["count"] += 1
+        bucket["sum_ms"] += elapsed_ms
+        bucket["max_ms"] = max(bucket["max_ms"], elapsed_ms)
+        if status != "ok":
+            bucket["errors"] += 1
+
+        rows = _trace_index.setdefault(trace_id, [])
+        rows.append(
+            {
+                "node_name": node_name,
+                "elapsed_ms": round(float(elapsed_ms), 2),
+                "status": status,
+                "learner_id": learner_id,
+                "knowledge_id": knowledge_id,
+            }
+        )
+        if len(rows) > 30:
+            _trace_index[trace_id] = rows[-30:]
+        if len(_trace_index) > 1000:
+            oldest = next(iter(_trace_index))
+            _trace_index.pop(oldest, None)
+
+
+def get_trace_detail(trace_id: str) -> Dict[str, Any]:
+    """按 trace_id 查询节点链路明细。"""
+    with _lock:
+        nodes = list(_trace_index.get(trace_id, []))
+    return {"trace_id": trace_id, "nodes": nodes, "found": len(nodes) > 0}
 
 
 def _percentile(sorted_samples: List[float], p: float) -> Optional[float]:
@@ -79,6 +127,15 @@ def get_http_metrics_snapshot() -> Dict[str, Any]:
             }
             for p, v in _path_stats.items()
         }
+        node_stats = {
+            node: {
+                "count": int(v["count"]),
+                "errors": int(v["errors"]),
+                "avg_elapsed_ms": round(v["sum_ms"] / max(1, v["count"]), 2),
+                "max_elapsed_ms": round(v["max_ms"], 2),
+            }
+            for node, v in _graph_node_stats.items()
+        }
     lat_sorted = sorted(lat)
     llm_sorted = sorted(llm_lat)
     total_err = http_4xx + http_5xx
@@ -101,6 +158,10 @@ def get_http_metrics_snapshot() -> Dict[str, Any]:
             "avg_latency_ms": round(sum(llm_lat) / max(1, len(llm_lat)), 2),
             "p95_latency_ms": _percentile(llm_sorted, 95),
         },
+        "graph": {
+            "node_stats": node_stats,
+            "trace_count": len(_trace_index),
+        },
     }
 
 
@@ -116,3 +177,5 @@ def reset_metrics() -> None:
         _llm_calls = 0
         _llm_failures = 0
         _llm_latency_ms.clear()
+        _graph_node_stats.clear()
+        _trace_index.clear()

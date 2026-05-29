@@ -6,9 +6,8 @@ from typing import Any, Optional
 from fastapi import APIRouter, HTTPException, Query, Request, File, UploadFile
 from pydantic import BaseModel
 
-from api.monitor_utils import build_agent_event_funnel
 from core.knowledge_graph import build_sample_math_graph
-from core.observability import get_http_metrics_snapshot
+from core.observability import get_http_metrics_snapshot, get_trace_detail
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -48,17 +47,14 @@ async def submit_answer(req: SubmissionRequest, request: Request) -> dict[str, A
     """
     try:
         _validate_required_fields(req.learner_id, req.knowledge_id)
-        events = await request.app.state.orchestrator.submit_answer(
+        response = await request.app.state.orchestrator.submit_answer(
             req.learner_id,
             req.knowledge_id,
             req.is_correct,
             req.time_spent_seconds,
             error_type=req.error_type,
         )
-        return {
-            "learner_id": req.learner_id,
-            "events": events,
-        }
+        return response
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
@@ -75,15 +71,12 @@ async def ask_question(req: QuestionRequest, request: Request) -> dict[str, Any]
         _validate_required_fields(req.learner_id, req.knowledge_id)
         if not req.question.strip():
             raise ValueError("question 不能为空")
-        events = await request.app.state.orchestrator.ask_question(
+        response = await request.app.state.orchestrator.ask_question(
             req.learner_id,
             req.knowledge_id,
             req.question,
         )
-        return {
-            "learner_id": req.learner_id,
-            "events": events,
-        }
+        return response
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception:
@@ -101,15 +94,12 @@ async def send_message(req: MessageRequest, request: Request) -> dict[str, Any]:
             raise ValueError("learner_id 不能为空")
         if not req.message.strip():
             raise ValueError("message 不能为空")
-        events = await request.app.state.orchestrator.send_message(
+        response = await request.app.state.orchestrator.send_message(
             req.learner_id,
             req.message,
             req.knowledge_id,
         )
-        return {
-            "learner_id": req.learner_id,
-            "events": events,
-        }
+        return response
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception:
@@ -163,10 +153,6 @@ async def monitor_summary(
     """
     orch = request.app.state.orchestrator
     metrics = get_http_metrics_snapshot()
-    bus_stats = orch.get_event_bus_stats()
-    by_type = bus_stats.get("by_type") or {}
-    funnel = build_agent_event_funnel(by_type if isinstance(by_type, dict) else {})
-
     mastery_payload: dict[str, Any] = {
         "learner_id": learner_id,
         "buckets": None,
@@ -209,19 +195,39 @@ async def monitor_summary(
         else:
             mastery_payload["note"] = "该学习者暂无模型数据，请先答题或提问。"
 
+    graph_metrics = metrics.get("graph", {})
+    node_stats = graph_metrics.get("node_stats") or {}
+    node_top = sorted(
+        (
+            {
+                "node_name": node_name,
+                "avg_elapsed_ms": row.get("avg_elapsed_ms", 0.0),
+                "count": row.get("count", 0),
+                "errors": row.get("errors", 0),
+            }
+            for node_name, row in node_stats.items()
+        ),
+        key=lambda x: x["avg_elapsed_ms"],
+        reverse=True,
+    )[:10]
+
     return {
         "generated_at": datetime.now().isoformat(),
         "metrics": metrics,
-        "event_bus": {
-            "total_published": bus_stats.get("total_published"),
-            "total_handled": bus_stats.get("total_handled"),
-            "total_in_history": bus_stats.get("total_in_history"),
-            "dead_letter_count": bus_stats.get("dead_letter_count"),
-            "active_subscriptions": bus_stats.get("active_subscriptions"),
+        "graph": {
+            "trace_count": graph_metrics.get("trace_count", 0),
+            "node_elapsed_top": node_top,
         },
-        "agent_funnel": funnel,
         "mastery": mastery_payload,
     }
+
+
+@router.get("/monitor/trace/{trace_id}")
+async def monitor_trace_detail(trace_id: str) -> dict[str, Any]:
+    """按 trace_id 查询 graph 节点执行明细。"""
+    if not trace_id.strip():
+        raise HTTPException(status_code=400, detail="trace_id 不能为空")
+    return get_trace_detail(trace_id.strip())
 
 
 # ==================== 错题本相关路由（新增）====================

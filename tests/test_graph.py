@@ -1,11 +1,11 @@
 """测试LangGraph学习状态图。"""
-import pytest
+import asyncio
+
 from core.graph import get_learning_graph
 from config.settings import settings
 
 
-@pytest.mark.asyncio
-async def test_assess_node():
+def test_assess_node():
     """测试评估节点。"""
     graph = get_learning_graph()
 
@@ -21,7 +21,7 @@ async def test_assess_node():
     }
 
     config = {"configurable": {"thread_id": "test_student"}}
-    result = await graph.ainvoke(initial_state, config=config)
+    result = asyncio.run(graph.ainvoke(initial_state, config=config))
 
     # 检查掌握度是否提升
     assert result["mastery"] > 0.1
@@ -29,10 +29,16 @@ async def test_assess_node():
     assert result.get("response") is not None
     # 检查流程是否正常结束
     assert result["next_action"] == "end"
+    # 检查 curriculum 由 graph 节点产出
+    assert isinstance(result.get("curriculum"), dict)
+    assert set(result["curriculum"].keys()) == {
+        "next_topic",
+        "review_due",
+        "learning_path_reason",
+    }
 
 
-@pytest.mark.asyncio
-async def test_hint_trigger():
+def test_hint_trigger():
     """测试连续答错触发提示。"""
     graph = get_learning_graph()
 
@@ -49,7 +55,7 @@ async def test_hint_trigger():
     }
 
     config = {"configurable": {"thread_id": "test_student_hint_2"}}
-    result = await graph.ainvoke(initial_state, config=config)
+    result = asyncio.run(graph.ainvoke(initial_state, config=config))
 
     # 检查是否有提示或hint_level提升
     has_hint = result.get("hint") is not None

@@ -36,7 +36,7 @@ async def lifespan(app: FastAPI):
     global orchestrator
     orchestrator = AgentOrchestrator()
     app.state.orchestrator = orchestrator
-    logging.getLogger(__name__).info("Agent orchestrator started with 5 agents")
+    logging.getLogger(__name__).info("LangGraph orchestrator started")
     yield
     try:
         app.state.orchestrator.db.close()
