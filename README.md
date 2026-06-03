@@ -263,7 +263,3 @@ python -m pytest tests/ -v
 LangGraph · FastAPI · Streamlit · SQLite · NetworkX · BKT · SM-2 · OpenAI 兼容 LLM 接口 · Plotly（进度可视化）
 
 ---
-
-## 许可证
-
-若仓库未单独声明 License，使用前请与维护者确认。
